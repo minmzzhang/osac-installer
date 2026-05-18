@@ -216,7 +216,9 @@ wait_for_resource deployment/keycloak-service condition=Available 600 ${KEYCLOAK
 
 # Apply AAP prerequisites and wait for it to be ready
 AAP_NS=""
-if oc get deployment automation-controller-operator-controller-manager -n ansible-aap &>/dev/null; then
+if oc get deployment automation-controller-operator-controller-manager -n aap &>/dev/null; then
+    AAP_NS="aap"
+elif oc get deployment automation-controller-operator-controller-manager -n ansible-aap &>/dev/null; then
     AAP_NS="ansible-aap"
 elif oc get deployment automation-controller-operator-controller-manager -n openshift-operators &>/dev/null; then
     AAP_NS="openshift-operators"
