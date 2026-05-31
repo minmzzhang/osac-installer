@@ -15,33 +15,39 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.OSAC_BOT_PAT }}
 
-      - name: Find latest commits with published images
+      - name: Check latest commits have published images
         id: find
         env:
           GH_TOKEN: ${{ secrets.OSAC_BOT_PAT }}
         run: |
-          find_latest_with_image() {
+          set -euo pipefail
+
+          check_image() {
             local repo=$1
             local image=$2
-
-            TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:osac-project/${image}:pull" | jq -r .token)
-
-            for sha in $(gh api "repos/osac-project/${repo}/commits?sha=main&per_page=20" --jq '.[].sha'); do
-              tag="sha-${sha:0:7}"
-              code=$(curl -s -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer ${TOKEN}" \
-                "https://ghcr.io/v2/osac-project/${image}/manifests/${tag}")
-              if [[ "${code}" == "200" ]]; then
-                echo "${sha}"
-                return 0
-              fi
-            done
-            return 1
+            local sha
+            sha=$(gh api "repos/osac-project/${repo}/commits?sha=main&per_page=1" --jq '.[0].sha')
+            local tag="sha-${sha:0:7}"
+            local token
+            token=$(curl -sf "https://ghcr.io/token?scope=repository:osac-project/${image}:pull" | jq -r .token)
+            local code
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${token}" \
+              "https://ghcr.io/v2/osac-project/${image}/manifests/${tag}")
+            if [[ "${code}" != "200" ]]; then
+              echo "ERROR: ${repo} latest main commit ${sha:0:7} has no published image (tag ${tag})" >&2
+              return 1
+            fi
+            echo "${sha}"
           }
 
-          echo "operator=$(find_latest_with_image osac-operator osac-operator)" >> "$GITHUB_OUTPUT"
-          echo "fulfillment=$(find_latest_with_image fulfillment-service fulfillment-service)" >> "$GITHUB_OUTPUT"
-          echo "aap=$(find_latest_with_image osac-aap osac-aap)" >> "$GITHUB_OUTPUT"
+          OPERATOR=$(check_image osac-operator osac-operator)
+          FULFILLMENT=$(check_image fulfillment-service fulfillment-service)
+          AAP=$(check_image osac-aap osac-aap)
+
+          echo "operator=${OPERATOR}" >> "$GITHUB_OUTPUT"
+          echo "fulfillment=${FULFILLMENT}" >> "$GITHUB_OUTPUT"
+          echo "aap=${AAP}" >> "$GITHUB_OUTPUT"
 
       - name: Update submodules
         id: update
@@ -53,10 +59,6 @@ jobs:
             local path=$1
             local name=$2
             local target=$3
-            if [[ -z "${target}" ]]; then
-              echo "WARNING: no image found for ${name}, skipping"
-              return
-            fi
             local current
             current=$(git -C "${path}" rev-parse HEAD)
             if [[ "${current}" == "${target}" ]]; then
@@ -77,12 +79,15 @@ jobs:
           update_submodule base/osac-aap osac-aap "${{ steps.find.outputs.aap }}"
 
           echo "changed=${changed}" >> "$GITHUB_OUTPUT"
-          # Write summary to file to preserve newlines
           echo -e "${summary}" > /tmp/bump-summary.txt
 
       - name: Sync image tags
         if: steps.update.outputs.changed == 'true'
         run: ./scripts/sync-image-tags.sh --fix
+
+      - name: Sync AuthConfig Rego
+        if: steps.update.outputs.changed == 'true'
+        run: pip install pyyaml && python3 scripts/sync-authconfig-rego.py --fix
 
       - name: Create or update PR
         if: steps.update.outputs.changed == 'true'
@@ -100,7 +105,7 @@ jobs:
           if [[ -n "${EXISTING}" ]]; then
             echo "Updated existing PR #${EXISTING}"
           else
-            BODY=$(cat <<'BODY_EOF'
+            BODY=$(cat <<BODY_EOF
           ## Automated submodule bump
 
           $(cat /tmp/bump-summary.txt)
