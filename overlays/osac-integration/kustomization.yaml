@@ -255,7 +255,6 @@ patches:
                 # of emergency situations where it isn't possible to get a valid JWT token from the identity provider.
                 emergency_service_accounts := {
                   "system:serviceaccount:osac-integration:admin",
-                  "system:serviceaccount:osac-integration:controller",
                   "system:serviceaccount:osac-integration:template-publisher",
                   "system:serviceaccount:osac-integration:osac-operator-controller-manager",
                 }
@@ -439,6 +438,10 @@ patches:
                     "/osac.public.v1.SecurityGroups/Get",
                     "/osac.public.v1.SecurityGroups/List",
                     "/osac.public.v1.SecurityGroups/Update",
+                    "/osac.public.v1.PublicIPAttachments/Create",
+                    "/osac.public.v1.PublicIPAttachments/Delete",
+                    "/osac.public.v1.PublicIPAttachments/Get",
+                    "/osac.public.v1.PublicIPAttachments/List",
                     "/osac.public.v1.PublicIPs/Create",
                     "/osac.public.v1.PublicIPs/Delete",
                     "/osac.public.v1.PublicIPs/Get",
