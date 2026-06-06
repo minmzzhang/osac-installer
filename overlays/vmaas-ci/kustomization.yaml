@@ -41,9 +41,9 @@ secretGenerator:
   options:
     disableNameSuffixHash: true
   literals:
-    - AAP_EE_IMAGE=ghcr.io/osac-project/osac-aap:sha-e2fd241
+    - AAP_EE_IMAGE=ghcr.io/osac-project/osac-aap:sha-24a1ee5
     - AAP_PROJECT_GIT_URI=https://github.com/osac-project/osac-aap
-    - AAP_PROJECT_GIT_BRANCH=e2fd24163f96075522b86c914b25f974c0e4a041
+    - AAP_PROJECT_GIT_BRANCH=24a1ee57120164bfca7c62550364e6f55454c1ac
 
 - name: cluster-fulfillment-ig
   options:
@@ -171,7 +171,6 @@ patches:
                 # of emergency situations where it isn't possible to get a valid JWT token from the identity provider.
                 emergency_service_accounts := {
                   "system:serviceaccount:osac-e2e-ci:admin",
-                  "system:serviceaccount:osac-e2e-ci:controller",
                   "system:serviceaccount:osac-e2e-ci:template-publisher",
                   "system:serviceaccount:osac-e2e-ci:osac-operator-controller-manager",
                 }
@@ -355,10 +354,16 @@ patches:
                     "/osac.public.v1.SecurityGroups/Get",
                     "/osac.public.v1.SecurityGroups/List",
                     "/osac.public.v1.SecurityGroups/Update",
+                    "/osac.public.v1.PublicIPAttachments/Create",
+                    "/osac.public.v1.PublicIPAttachments/Delete",
+                    "/osac.public.v1.PublicIPAttachments/Get",
+                    "/osac.public.v1.PublicIPAttachments/List",
+                    "/osac.public.v1.PublicIPAttachments/Update",
                     "/osac.public.v1.PublicIPs/Create",
                     "/osac.public.v1.PublicIPs/Delete",
                     "/osac.public.v1.PublicIPs/Get",
                     "/osac.public.v1.PublicIPs/List",
+                    "/osac.public.v1.PublicIPs/Update",
                     "/osac.public.v1.Roles/Get",
                     "/osac.public.v1.Roles/List",
                     "/osac.public.v1.RoleBindings/Get",
