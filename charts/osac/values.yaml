@@ -50,7 +50,7 @@ service:
     caBundle:
       configMap: ca-bundle
   auth:
-    issuerUrl: ""
+    issuerUrl: "https://REPLACE_ME"
     controllerCredentials: []
   idp:
     provider: keycloak
