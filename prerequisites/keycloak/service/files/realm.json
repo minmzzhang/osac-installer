@@ -997,7 +997,8 @@
         "basic",
         "username",
         "organization",
-        "roles"
+        "roles",
+        "osac-api"
       ],
       "optionalClientScopes": []
     },
@@ -1049,7 +1050,8 @@
         "profile",
         "roles",
         "basic",
-        "email"
+        "email",
+        "osac-api"
       ],
       "optionalClientScopes": [
         "address",
@@ -1173,6 +1175,35 @@
     }
   ],
   "clientScopes": [
+    {
+      "id": "8899e9f6-9ba9-48c6-8abd-c281dfd067c5",
+      "name": "osac-api",
+      "description": "OSAC API",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false",
+        "gui.order": "",
+        "consent.screen.text": "",
+        "include.in.openid.provider.metadata": "false"
+      },
+      "protocolMappers": [
+        {
+          "id": "9c44741f-8a3a-4468-8911-6b2ea6611b52",
+          "name": "osac-api-aud",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "false",
+            "lightweight.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "included.custom.audience": "osac-api"
+          }
+        }
+      ]
+    },
     {
       "id": "2d4feb76-fd87-46d5-9eca-b7471da62403",
       "name": "service_account",
