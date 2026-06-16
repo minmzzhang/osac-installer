@@ -242,8 +242,9 @@ aap:
       hostname: ""
 
   configAsCode:
-    # Secret names for AAP config-as-code. These are created by
-    # scripts/aap-configuration.sh during post-install setup.
+    # Secret names for AAP config-as-code. These must exist before the
+    # bootstrap job runs. scripts/setup.sh creates them automatically in
+    # Helm mode; see docs/helm-deployment-guide.md for manual creation.
     manifestSecret: "config-as-code-manifest-ig"
     secret: "config-as-code-ig"
 

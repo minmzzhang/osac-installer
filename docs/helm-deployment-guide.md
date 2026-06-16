@@ -464,8 +464,14 @@ The AAP bootstrap job requires a subscription manifest (license.zip). Obtain
 it from the [Red Hat Customer Portal](https://access.redhat.com/) under
 **Subscriptions > Subscription Allocations > Export Manifest**.
 
+> **Note:** `scripts/setup.sh` creates this secret automatically when
+> `DEPLOY_MODE=helm`. Place `license.zip` in
+> `overlays/<overlay>/files/license.zip` or set the `AAP_LICENSE_FILE`
+> environment variable to its path. The manual command below is only needed
+> if you are not using `setup.sh`.
+
 ```bash
-# Create the license secret
+# Create the license secret (manual method)
 oc create secret generic config-as-code-manifest-ig \
   --from-file=license.zip=/path/to/your/license.zip \
   -n ${NAMESPACE}
@@ -476,7 +482,13 @@ oc create secret generic config-as-code-manifest-ig \
 This tells the AAP bootstrap job which execution environment image and git
 repository to use for configuration playbooks.
 
+> **Note:** `scripts/setup.sh` creates this secret automatically when
+> `DEPLOY_MODE=helm`, using sensible defaults. Override via `AAP_EE_IMAGE`,
+> `AAP_PROJECT_GIT_URI`, and `AAP_PROJECT_GIT_BRANCH` environment variables.
+> The manual command below is only needed if you are not using `setup.sh`.
+
 ```bash
+# Create the config-as-code secret (manual method)
 oc create secret generic config-as-code-ig \
   --from-literal=AAP_EE_IMAGE=ghcr.io/osac-project/osac-aap:latest \
   --from-literal=AAP_PROJECT_GIT_URI=https://github.com/osac-project/osac-aap \

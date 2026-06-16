@@ -323,6 +323,40 @@ EOF
         -n "${INSTALLER_NAMESPACE}" \
         --dry-run=client -o yaml | oc apply -f -
 
+    # Create AAP license secret (required by the bootstrap job).
+    # In kustomize mode this is handled by secretGenerator; in Helm mode we
+    # must create it explicitly. The license.zip can be provided via:
+    #   1. AAP_LICENSE_FILE env var (absolute path)
+    #   2. overlays/<overlay>/files/license.zip (default convention)
+    AAP_LICENSE_FILE=${AAP_LICENSE_FILE:-"overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/files/license.zip"}
+    if [[ -f "${AAP_LICENSE_FILE}" ]]; then
+        echo "Creating config-as-code-manifest-ig secret from ${AAP_LICENSE_FILE}..."
+        oc create secret generic config-as-code-manifest-ig \
+            --from-file=license.zip="${AAP_LICENSE_FILE}" \
+            -n "${INSTALLER_NAMESPACE}" \
+            --dry-run=client -o yaml | oc apply -f -
+        oc label secret config-as-code-manifest-ig \
+            osac.openshift.io/project=osac-aap \
+            -n "${INSTALLER_NAMESPACE}" --overwrite
+    else
+        echo "WARNING: AAP license file not found at ${AAP_LICENSE_FILE}"
+        echo "The AAP bootstrap job will fail without it."
+        echo "Set AAP_LICENSE_FILE or place license.zip in overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/files/"
+    fi
+
+    # Create AAP config-as-code secret (EE image, git URI, git branch).
+    # Values can be overridden via environment variables.
+    AAP_EE_IMAGE=${AAP_EE_IMAGE:-"ghcr.io/osac-project/osac-aap:latest"}
+    AAP_PROJECT_GIT_URI=${AAP_PROJECT_GIT_URI:-"https://github.com/osac-project/osac-aap"}
+    AAP_PROJECT_GIT_BRANCH=${AAP_PROJECT_GIT_BRANCH:-"main"}
+    echo "Creating config-as-code-ig secret..."
+    oc create secret generic config-as-code-ig \
+        --from-literal=AAP_EE_IMAGE="${AAP_EE_IMAGE}" \
+        --from-literal=AAP_PROJECT_GIT_URI="${AAP_PROJECT_GIT_URI}" \
+        --from-literal=AAP_PROJECT_GIT_BRANCH="${AAP_PROJECT_GIT_BRANCH}" \
+        -n "${INSTALLER_NAMESPACE}" \
+        --dry-run=client -o yaml | oc apply -f -
+
     echo "Deploying OSAC using Helm..."
     helm dependency build charts/osac/
     helm upgrade --install osac charts/osac/ \
