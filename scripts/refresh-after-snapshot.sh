@@ -15,7 +15,7 @@ INSTALLER_VM_TEMPLATE=${INSTALLER_VM_TEMPLATE:-}
 CLUSTER_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 KEYCLOAK_NS="keycloak"
 REALM_JSON="prerequisites/keycloak/service/files/realm.json"
-FC_CLIENT="osac-controller"
+FC_CLIENT=${FC_CLIENT:-"osac-controller"}
 
 echo "=== Refreshing OSAC after snapshot boot ==="
 echo "Namespace: ${INSTALLER_NAMESPACE}"
