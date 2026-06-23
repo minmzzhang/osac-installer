@@ -19,7 +19,6 @@ resources:
 - cert-manager/
 - ca-issuer.yaml
 - trust-manager.yaml
-- authorino-operator.yaml
 - keycloak
 - nfs-subdir-provisioner/overlays/lab
 - aap-installation.yaml

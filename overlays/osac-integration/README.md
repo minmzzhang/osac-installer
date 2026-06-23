@@ -8,7 +8,6 @@ The following components must be installed manually before applying this overlay
 
 | Component | Manifest |
 |---|---|
-| Authorino | [prerequisites/authorino-operator.yaml](../../prerequisites/authorino-operator.yaml) |
 | Keycloak | [prerequisites/keycloak/](../../prerequisites/keycloak/) |
 | Trust Manager | [prerequisites/trust-manager.yaml](../../prerequisites/trust-manager.yaml) |
 | AAP Operator | [prerequisites/aap-installation.yaml](../../prerequisites/aap-installation.yaml) |
