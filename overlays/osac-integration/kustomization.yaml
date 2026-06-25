@@ -188,7 +188,6 @@ patches:
                 - --grpc-listener-tls-crt=/etc/fulfillment-grpc-server/tls/tls.crt
                 - --grpc-listener-tls-key=/etc/fulfillment-grpc-server/tls/tls.key
                 - --grpc-authn-trusted-token-issuers=https://keycloak-keycloak.apps.osac-integration.svc.massopen.cloud/realms/osac
-                - --tenancy-logic=default
                 - --metrics-listener-address=0.0.0.0:8002
                 - --token-signer-crt=/etc/fulfillment-token-signer/tls.crt
                 - --token-signer-key=/etc/fulfillment-token-signer/tls.key
