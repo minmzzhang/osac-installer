@@ -1,0 +1,182 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # Run nightly at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  CHARTS_REPO: ${{ github.repository_owner }}/charts
+
+jobs:
+  nightly-build:
+    name: Build and publish nightly chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      images_txt: ${{ steps.images.outputs.path }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      with:
+        submodules: recursive
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update submodules to latest main
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        check_image() {
+          local repo=$1
+          local image=$2
+          local sha
+          sha=$(git ls-remote "https://github.com/osac-project/${repo}.git" refs/heads/main | cut -f1)
+          local tag="sha-${sha:0:7}"
+          local token
+          token=$(curl -sf "https://ghcr.io/token?scope=repository:osac-project/${image}:pull" | jq -r .token)
+          local code
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/osac-project/${image}/manifests/${tag}")
+          if [[ "${code}" != "200" ]]; then
+            echo "WARN: ${repo} main HEAD ${sha:0:7} has no published image (tag ${tag}), keeping pinned submodule" >&2
+            return 1
+          fi
+          echo "${sha}"
+        }
+
+        for pair in \
+          "osac-operator:osac-operator:base/osac-operator" \
+          "fulfillment-service:fulfillment-service:base/osac-fulfillment-service" \
+          "osac-aap:osac-aap:base/osac-aap"; do
+          repo="${pair%%:*}"
+          rest="${pair#*:}"
+          image="${rest%%:*}"
+          path="${rest#*:}"
+
+          sha=$(check_image "${repo}" "${image}") || continue
+          current=$(git -C "${path}" rev-parse HEAD)
+          if [[ "${current}" != "${sha}" ]]; then
+            git -C "${path}" fetch origin
+            git -C "${path}" checkout "${sha}"
+            echo "${repo}: updated ${current:0:7} -> ${sha:0:7}"
+          else
+            echo "${repo}: already at ${sha:0:7}"
+          fi
+        done
+
+    - name: Sync image tags
+      run: ./scripts/sync-image-tags.sh --fix
+
+    - name: Generate nightly version
+      id: version
+      run: |
+        DATE=$(date -u +%Y%m%d)
+        SHORT_SHA=$(git rev-parse --short=7 HEAD)
+        VERSION="0.0.1-nightly.${DATE}.${SHORT_SHA}"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Nightly version: ${VERSION}"
+
+    - name: Set up Helm
+      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+      with:
+        version: v3.17.0
+
+    - name: Log in to GHCR
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+    - name: Build chart dependencies from submodules
+      run: helm dependency build charts/osac/
+
+    - name: Update image tags to submodule SHAs
+      run: |
+        for pair in \
+          "osac-operator:tag" \
+          "fulfillment-service:inline" \
+          "osac-aap:inline"; do
+          component="${pair%%:*}"
+          mode="${pair#*:}"
+          submodule_path="base/osac-${component}"
+          if [[ "${component}" == "fulfillment-service" ]]; then
+            submodule_path="base/osac-fulfillment-service"
+          fi
+
+          sha=$(git -C "${submodule_path}" rev-parse HEAD 2>/dev/null) || continue
+          tag="sha-${sha:0:7}"
+
+          if [[ "${mode}" == "tag" ]]; then
+            sed -i "/repository: ghcr.io\/osac-project\/${component}$/{n;s|tag: .*|tag: ${tag}|}" \
+              charts/osac/values.yaml
+          else
+            sed -i "s|${component}:latest|${component}:${tag}|g" charts/osac/values.yaml
+          fi
+          echo "${component}: ${tag}"
+        done
+
+        echo "--- Updated values.yaml image tags ---"
+        grep -E '(repository:|tag:|fulfillment-service:|osac-aap:)' charts/osac/values.yaml || true
+
+    - name: Lint chart
+      run: |
+        helm lint charts/osac/ \
+          --set service.externalHostname=nightly.example.com \
+          --set service.internalHostname=nightly-internal.example.com
+
+    - name: Package chart
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        helm package charts/osac/ \
+          --version "${VERSION}" \
+          --app-version "${VERSION}"
+
+    - name: Push chart to GHCR
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        helm push "osac-${VERSION}.tgz" \
+          oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
+
+    - name: Generate images.txt
+      id: images
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        helm template osac "osac-${VERSION}.tgz" \
+          --values values/development/values.yaml \
+          --set service.externalHostname=placeholder.example.com \
+          --set service.internalHostname=placeholder-internal.example.com \
+          --set validation.enabled=false \
+          --set aap.bootstrap.enabled=false \
+          --set aap.aap.instance.enabled=false \
+          --set dbMigrate.enabled=false \
+          --set bmf.enabled=false \
+        | grep -oP 'image:\s*\K\S+' \
+        | tr -d '"' \
+        | sort -u \
+        > images.txt
+
+        echo "--- images.txt ---"
+        cat images.txt
+        echo "path=images.txt" >> "$GITHUB_OUTPUT"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: nightly-${{ steps.version.outputs.version }}
+        path: |
+          osac-${{ steps.version.outputs.version }}.tgz
+          images.txt
+        retention-days: 14
