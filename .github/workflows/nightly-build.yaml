@@ -336,6 +336,8 @@ jobs:
 
     - name: Create nightly tag
       run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
         TAG="v${VERSION}"
         git tag "${TAG}" -m "Nightly build ${VERSION}"
         git push origin "${TAG}"
