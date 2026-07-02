@@ -15,16 +15,22 @@ permissions: {}
 env:
   REGISTRY: ghcr.io
   CHARTS_REPO: ${{ github.repository_owner }}/charts
-  # Single source of truth for submodule components: repo, image, path, tag-mode (tag|inline)
+  VALUES_FILE: values/development/values.yaml
+  # Single source of truth for submodule components: repo, image, path, tag-mode (tag|inline), chart-path
   COMPONENTS: >-
-    osac-operator:osac-operator:base/osac-operator:tag
-    fulfillment-service:fulfillment-service:base/osac-fulfillment-service:inline
-    osac-aap:osac-aap:base/osac-aap:inline
-    bare-metal-fulfillment-operator:bare-metal-fulfillment-operator:base/bare-metal-fulfillment-operator:tag
+    osac-operator:osac-operator:base/osac-operator:tag:base/osac-operator/charts/operator
+    fulfillment-service:fulfillment-service:base/osac-fulfillment-service:inline:base/osac-fulfillment-service/charts/service
+    osac-aap:osac-aap:base/osac-aap:inline:base/osac-aap/charts/aap
+    bare-metal-fulfillment-operator:bare-metal-fulfillment-operator:base/bare-metal-fulfillment-operator:tag:base/bare-metal-fulfillment-operator/charts/operator
+    osac-ui:osac-ui:base/osac-ui:inline:base/osac-ui/charts/ui
+  # CRD charts (no image, just chart paths)
+  CRD_CHARTS: >-
+    osac-operator-crds:base/osac-operator/charts/operator-crds
+    bare-metal-fulfillment-operator-crds:base/bare-metal-fulfillment-operator/charts/operator-crds
 
 jobs:
   nightly-build:
-    name: Build and publish nightly chart
+    name: Build and publish nightly charts
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,7 +38,6 @@ jobs:
       packages: write
     outputs:
       version: ${{ steps.version.outputs.version }}
-      images_txt: ${{ steps.images.outputs.path }}
 
     steps:
     - name: Checkout repository
@@ -44,8 +49,6 @@ jobs:
         persist-credentials: false
 
     - name: Update submodules to latest main
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         set -euo pipefail
         check_image() {
@@ -79,7 +82,7 @@ jobs:
           sha=$(check_image "${repo}" "${image}") || continue
           current=$(git -C "${path}" rev-parse HEAD)
           if [[ "${current}" != "${sha}" ]]; then
-            git -C "${path}" fetch origin
+            git -C "${path}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin
             git -C "${path}" checkout "${sha}"
             echo "${repo}: updated ${current:0:7} -> ${sha:0:7}"
           else
@@ -113,7 +116,82 @@ jobs:
         GHCR_USER: ${{ github.actor }}
       run: printf '%s' "${GHCR_TOKEN}" | helm registry login "${{ env.REGISTRY }}" -u "${GHCR_USER}" --password-stdin
 
-    - name: Build chart dependencies from submodules
+    - name: Publish component charts
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
+      run: |
+        set -euo pipefail
+        published=""
+
+        # Publish CRD charts first (they have no image dependency)
+        for entry in ${CRD_CHARTS}; do
+          chart_name="${entry%%:*}"
+          chart_path="${entry#*:}"
+          echo "--- Publishing ${chart_name} ---"
+          helm package "${chart_path}" --version "${VERSION}"
+          helm push "${chart_name}-${VERSION}.tgz" "${OCI_REPO}"
+          published="${published}\n${chart_name}:${VERSION}"
+        done
+
+        # Publish component charts
+        for entry in ${COMPONENTS}; do
+          component="${entry%%:*}"
+          rest="${entry#*:}"
+          rest="${rest#*:}"
+          rest="${rest#*:}"
+          chart_path="${rest#*:}"
+          echo "--- Publishing ${component} ---"
+          helm package "${chart_path}" --version "${VERSION}"
+          helm push "${component}-${VERSION}.tgz" "${OCI_REPO}"
+          published="${published}\n${component}:${VERSION}"
+        done
+
+        echo -e "Published charts:${published}"
+
+    - name: Verify component chart publications
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
+      run: |
+        set -euo pipefail
+        for entry in ${CRD_CHARTS}; do
+          chart_name="${entry%%:*}"
+          echo "Verifying ${chart_name}..."
+          helm show chart "${OCI_REPO}/${chart_name}" --version "${VERSION}"
+        done
+        for entry in ${COMPONENTS}; do
+          component="${entry%%:*}"
+          echo "Verifying ${component}..."
+          helm show chart "${OCI_REPO}/${component}" --version "${VERSION}"
+        done
+
+    - name: Rewrite umbrella chart to use published components
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
+      run: |
+        set -euo pipefail
+        cd charts/osac
+
+        # Rewrite all dependencies to point to OCI-published component charts
+        for entry in ${CRD_CHARTS}; do
+          chart_name="${entry%%:*}"
+          yq -i "(.dependencies[] | select(.name == \"${chart_name}\")).repository = \"${OCI_REPO}\"" Chart.yaml
+          yq -i "(.dependencies[] | select(.name == \"${chart_name}\")).version = \"${VERSION}\"" Chart.yaml
+        done
+        for entry in ${COMPONENTS}; do
+          component="${entry%%:*}"
+          yq -i "(.dependencies[] | select(.name == \"${component}\")).repository = \"${OCI_REPO}\"" Chart.yaml
+          yq -i "(.dependencies[] | select(.name == \"${component}\")).version = \"${VERSION}\"" Chart.yaml
+        done
+
+        rm -f Chart.lock
+
+        echo "--- Updated Chart.yaml ---"
+        cat Chart.yaml
+
+    - name: Build umbrella chart dependencies from OCI
       run: helm dependency build charts/osac/
 
     - name: Update image tags to submodule SHAs
@@ -124,6 +202,7 @@ jobs:
           rest="${rest#*:}"
           submodule_path="${rest%%:*}"
           mode="${rest#*:}"
+          mode="${mode%%:*}"
 
           sha=$(git -C "${submodule_path}" rev-parse HEAD 2>/dev/null) || continue
           tag="sha-${sha:0:7}"
@@ -143,7 +222,7 @@ jobs:
     - name: Lint chart
       run: ct lint --all --config ct.yaml
 
-    - name: Package chart
+    - name: Package umbrella chart
       env:
         VERSION: ${{ steps.version.outputs.version }}
       run: |
@@ -151,21 +230,28 @@ jobs:
           --version "${VERSION}" \
           --app-version "${VERSION}"
 
-    - name: Push chart to GHCR
+    - name: Push umbrella chart to GHCR
       env:
         VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         helm push "osac-${VERSION}.tgz" "${OCI_REPO}"
 
+    - name: Verify umbrella chart publication
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
+      run: |
+        echo "Verifying umbrella chart was published successfully..."
+        helm show chart "${OCI_REPO}/osac" --version "${VERSION}"
+
     - name: Generate images.txt
-      id: images
       env:
         VERSION: ${{ steps.version.outputs.version }}
       run: |
         set -euo pipefail
         helm template osac "osac-${VERSION}.tgz" \
-          --values values/development/values.yaml \
+          --values "${VALUES_FILE}" \
           --set service.externalHostname=placeholder.example.com \
           --set service.internalHostname=placeholder-internal.example.com \
         | grep -oP 'image:\s*\K\S+' \
@@ -209,7 +295,6 @@ jobs:
 
         echo "--- images.txt ---"
         cat images.txt
-        echo "path=images.txt" >> "$GITHUB_OUTPUT"
 
     - name: Upload artifacts
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
@@ -219,3 +304,103 @@ jobs:
           osac-${{ steps.version.outputs.version }}.tgz
           images.txt
         retention-days: 14
+
+  e2e-test:
+    name: E2E validation
+    needs: nightly-build
+    uses: osac-project/osac-test-infra/.github/workflows/e2e-vmaas-full-install.yml@main
+    with:
+      test-suite: vmaas
+      installer-repo: ${{ github.repository }}
+      installer-ref: ${{ github.ref_name }}
+      test-infra-repository: osac-project/osac-test-infra
+      test-infra-ref: main
+    secrets: inherit
+
+  tag-and-notify:
+    name: Tag and notify
+    needs: [nightly-build, e2e-test]
+    runs-on: ubuntu-latest
+    if: success()
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.nightly-build.outputs.version }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create nightly tag
+      run: |
+        TAG="v${VERSION}"
+        git tag "${TAG}" -m "Nightly build ${VERSION}"
+        git push origin "${TAG}"
+        echo "Tagged: ${TAG}"
+
+    - name: Notify Slack on success
+      if: success()
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_NIGHTLY_WEBHOOK_URL }}
+      run: |
+        if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
+          echo "SLACK_NIGHTLY_WEBHOOK_URL not set, skipping notification"
+          exit 0
+        fi
+        OCI_BASE="oci://ghcr.io/${{ github.repository_owner }}/charts"
+        curl -sf --max-time 15 -X POST "${SLACK_WEBHOOK_URL}" \
+          -H "Content-Type: application/json" \
+          -d @- <<PAYLOAD
+        {
+          "blocks": [
+            {
+              "type": "header",
+              "text": {"type": "plain_text", "text": ":white_check_mark: Nightly Build ${VERSION} - Published"}
+            },
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "*Charts published to GHCR:*\n\`\`\`\nosac-operator-crds            ${VERSION}  ${OCI_BASE}/osac-operator-crds\nosac-operator                 ${VERSION}  ${OCI_BASE}/osac-operator\nfulfillment-service           ${VERSION}  ${OCI_BASE}/fulfillment-service\nosac-aap                      ${VERSION}  ${OCI_BASE}/osac-aap\nbare-metal-fulfillment-operator-crds  ${VERSION}  ${OCI_BASE}/bare-metal-fulfillment-operator-crds\nbare-metal-fulfillment-operator       ${VERSION}  ${OCI_BASE}/bare-metal-fulfillment-operator\nosac-ui                       ${VERSION}  ${OCI_BASE}/osac-ui\nosac (umbrella)               ${VERSION}  ${OCI_BASE}/osac\n\`\`\`\n*Tag:* \`v${VERSION}\`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow>"
+              }
+            }
+          ]
+        }
+        PAYLOAD
+
+  notify-failure:
+    name: Notify failure
+    needs: [nightly-build, e2e-test]
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+    - name: Notify Slack on failure
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_NIGHTLY_WEBHOOK_URL }}
+      run: |
+        if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
+          echo "SLACK_NIGHTLY_WEBHOOK_URL not set, skipping notification"
+          exit 0
+        fi
+        curl -sf --max-time 15 -X POST "${SLACK_WEBHOOK_URL}" \
+          -H "Content-Type: application/json" \
+          -d @- <<PAYLOAD
+        {
+          "blocks": [
+            {
+              "type": "header",
+              "text": {"type": "plain_text", "text": ":x: Nightly Build Failed"}
+            },
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow>\n*Branch:* \`${{ github.ref_name }}\`\nPlease investigate the failure."
+              }
+            }
+          ]
+        }
+        PAYLOAD
