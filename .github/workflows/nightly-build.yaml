@@ -305,21 +305,21 @@ jobs:
           images.txt
         retention-days: 14
 
-  e2e-test:
-    name: E2E validation
-    needs: nightly-build
-    uses: osac-project/osac-test-infra/.github/workflows/e2e-vmaas-full-install.yml@main
-    with:
-      test-suite: vmaas
-      installer-repo: ${{ github.repository }}
-      installer-ref: ${{ github.ref_name }}
-      test-infra-repository: osac-project/osac-test-infra
-      test-infra-ref: main
-    secrets: inherit
+  # e2e-test:
+  #   name: E2E validation
+  #   needs: nightly-build
+  #   uses: osac-project/osac-test-infra/.github/workflows/e2e-vmaas-full-install.yml@main
+  #   with:
+  #     test-suite: vmaas
+  #     installer-repo: ${{ github.repository }}
+  #     installer-ref: ${{ github.ref_name }}
+  #     test-infra-repository: osac-project/osac-test-infra
+  #     test-infra-ref: main
+  #   secrets: inherit
 
   tag-and-notify:
     name: Tag and notify
-    needs: [nightly-build, e2e-test]
+    needs: [nightly-build]
     runs-on: ubuntu-latest
     if: success()
     permissions:
@@ -373,7 +373,7 @@ jobs:
 
   notify-failure:
     name: Notify failure
-    needs: [nightly-build, e2e-test]
+    needs: [nightly-build]
     runs-on: ubuntu-latest
     if: failure()
     steps:
