@@ -29,15 +29,19 @@ env:
     bare-metal-fulfillment-operator-crds:base/bare-metal-fulfillment-operator/charts/operator-crds
 
 jobs:
-  nightly-build:
-    name: Build and publish nightly charts
+  # -------------------------------------------------------------------
+  # Job 1: Bump submodules and push to a temporary branch for E2E testing
+  # -------------------------------------------------------------------
+  prepare:
+    name: Prepare nightly state
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      # Push/pull chart OCI artifacts to GHCR
-      packages: write
+      contents: write
+      packages: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      temp-branch: ${{ steps.push.outputs.branch }}
+      temp-sha: ${{ steps.push.outputs.sha }}
 
     steps:
     - name: Checkout repository
@@ -46,7 +50,6 @@ jobs:
         submodules: recursive
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
-        persist-credentials: false
 
     - name: Update submodules to latest main
       run: |
@@ -103,6 +106,68 @@ jobs:
         echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         echo "Nightly version: ${VERSION} (base: ${BASE_VERSION})"
 
+    - name: Push temporary branch
+      id: push
+      run: |
+        set -euo pipefail
+        DATE=$(date -u +%Y%m%d)
+        SHORT_SHA=$(git rev-parse --short=7 HEAD)
+        BRANCH="nightly/${DATE}-${SHORT_SHA}"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git checkout -b "${BRANCH}"
+        git add -A
+        git diff --cached --quiet || git commit -m "nightly: bump submodules to latest main"
+
+        git push origin "${BRANCH}"
+        COMMIT_SHA=$(git rev-parse HEAD)
+
+        echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+        echo "sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+        echo "Pushed temp branch: ${BRANCH} (${COMMIT_SHA})"
+
+  # -------------------------------------------------------------------
+  # Job 2: Run E2E tests against the temporary branch
+  # -------------------------------------------------------------------
+  e2e-test:
+    name: E2E validation
+    needs: prepare
+    permissions:
+      contents: read
+    uses: osac-project/osac-test-infra/.github/workflows/e2e-vmaas-full-install.yml@2f7c8d6335f057d55426846a6e5b5880c0ea77ab  # main
+    with:
+      test-suite: vmaas
+      installer-repo: ${{ github.repository }}
+      installer-ref: ${{ needs.prepare.outputs.temp-branch }}
+      test-infra-repository: osac-project/osac-test-infra
+      test-infra-ref: main
+    secrets: inherit
+
+  # -------------------------------------------------------------------
+  # Job 3: Publish charts (only if E2E passes)
+  # -------------------------------------------------------------------
+  publish:
+    name: Publish nightly charts
+    needs: [prepare, e2e-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Push/pull chart OCI artifacts to GHCR
+      packages: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+    - name: Checkout temporary branch
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      with:
+        ref: ${{ needs.prepare.outputs.temp-branch }}
+        submodules: recursive
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: false
+
     - name: Set up Helm
       uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
       with:
@@ -119,13 +184,11 @@ jobs:
 
     - name: Publish component charts
       env:
-        VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         set -euo pipefail
         published=""
 
-        # Publish CRD charts first (they have no image dependency)
         for entry in ${CRD_CHARTS}; do
           chart_name="${entry%%:*}"
           chart_path="${entry#*:}"
@@ -135,7 +198,6 @@ jobs:
           published="${published}\n${chart_name}:${VERSION}"
         done
 
-        # Publish component charts
         for entry in ${COMPONENTS}; do
           component="${entry%%:*}"
           rest="${entry#*:}"
@@ -152,7 +214,6 @@ jobs:
 
     - name: Verify component chart publications
       env:
-        VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         set -euo pipefail
@@ -169,13 +230,11 @@ jobs:
 
     - name: Rewrite umbrella chart to use published components
       env:
-        VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         set -euo pipefail
         cd charts/osac
 
-        # Rewrite all dependencies to point to OCI-published component charts
         for entry in ${CRD_CHARTS}; do
           chart_name="${entry%%:*}"
           yq -i "(.dependencies[] | select(.name == \"${chart_name}\")).repository = \"${OCI_REPO}\"" Chart.yaml
@@ -225,8 +284,6 @@ jobs:
       run: ct lint --all --config ct.yaml
 
     - name: Package umbrella chart
-      env:
-        VERSION: ${{ steps.version.outputs.version }}
       run: |
         helm package charts/osac/ \
           --version "${VERSION}" \
@@ -234,22 +291,18 @@ jobs:
 
     - name: Push umbrella chart to GHCR
       env:
-        VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         helm push "osac-${VERSION}.tgz" "${OCI_REPO}"
 
     - name: Verify umbrella chart publication
       env:
-        VERSION: ${{ steps.version.outputs.version }}
         OCI_REPO: oci://${{ env.REGISTRY }}/${{ env.CHARTS_REPO }}
       run: |
         echo "Verifying umbrella chart was published successfully..."
         helm show chart "${OCI_REPO}/osac" --version "${VERSION}"
 
     - name: Generate images.txt
-      env:
-        VERSION: ${{ steps.version.outputs.version }}
       run: |
         set -euo pipefail
         helm template osac "osac-${VERSION}.tgz" \
@@ -315,37 +368,26 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
       with:
-        name: nightly-${{ steps.version.outputs.version }}
+        name: nightly-${{ needs.prepare.outputs.version }}
         path: |
-          osac-${{ steps.version.outputs.version }}.tgz
+          osac-${{ needs.prepare.outputs.version }}.tgz
           images.txt
         retention-days: 14
 
-  e2e-test:
-    name: E2E validation
-    needs: nightly-build
-    if: github.repository == 'osac-project/osac-installer'
-    permissions:
-      contents: read
-    uses: osac-project/osac-test-infra/.github/workflows/e2e-vmaas-full-install.yml@2f7c8d6335f057d55426846a6e5b5880c0ea77ab  # main
-    with:
-      test-suite: vmaas
-      installer-repo: ${{ github.repository }}
-      installer-ref: ${{ github.ref_name }}
-      test-infra-repository: osac-project/osac-test-infra
-      test-infra-ref: main
-    secrets: inherit
-
+  # -------------------------------------------------------------------
+  # Job 4: Tag and send success notification
+  # -------------------------------------------------------------------
   tag-and-notify:
     name: Tag and notify
-    needs: [nightly-build, e2e-test]
+    needs: [prepare, publish]
     runs-on: osac-ci
-    if: ${{ !failure() && !cancelled() }}
+    if: success()
     permissions:
-      # Create nightly git tags for source traceability
+      # Create nightly git tags and delete temp branch
       contents: write
     env:
-      VERSION: ${{ needs.nightly-build.outputs.version }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TEMP_BRANCH: ${{ needs.prepare.outputs.temp-branch }}
 
     steps:
     - name: Checkout repository
@@ -353,6 +395,18 @@ jobs:
       with:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create nightly tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        TAG="v${VERSION}"
+        git tag "${TAG}" -m "Nightly build ${VERSION}"
+        git push origin "${TAG}"
+        echo "Tagged: ${TAG}"
+
+    - name: Delete temporary branch
+      run: git push origin --delete "${TEMP_BRANCH}" || true
 
     - name: Read AppRole credentials
       id: approle
@@ -373,15 +427,6 @@ jobs:
         exportEnv: false
         secrets: |
           secret/data/osac/e2e/slack-webhook-url url | SLACK_WEBHOOK_URL
-
-    - name: Create nightly tag
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        TAG="v${VERSION}"
-        git tag "${TAG}" -m "Nightly build ${VERSION}"
-        git push origin "${TAG}"
-        echo "Tagged: ${TAG}"
 
     - name: Notify Slack on success
       env:
@@ -412,12 +457,21 @@ jobs:
         }
         PAYLOAD
 
+  # -------------------------------------------------------------------
+  # Job 5: Notify on failure (temp branch kept for debugging, see
+  # cleanup-nightly-branches.yaml for TTL-based removal)
+  # -------------------------------------------------------------------
   notify-failure:
     name: Notify failure
-    needs: [nightly-build, e2e-test, tag-and-notify]
+    needs: [prepare, e2e-test, publish, tag-and-notify]
     runs-on: osac-ci
     if: failure()
+
     steps:
+    # Note: the temp branch is intentionally NOT deleted here. On failure, no
+    # git tag exists to preserve the exact failing state, so the nightly/*
+    # branch is the only reference for debugging. It's cleaned up later by
+    # cleanup-nightly-branches.yaml (TTL-based, runs daily).
     - name: Read AppRole credentials
       id: approle
       run: |
