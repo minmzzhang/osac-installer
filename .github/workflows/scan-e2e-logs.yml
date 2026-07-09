@@ -32,8 +32,19 @@ jobs:
       # Fetching and deleting the completed run's logs needs actions:write.
       actions: write
     steps:
+      - name: Scan and purge run logs
+        id: scan
+        uses: osac-project/osac-test-infra/.github/actions/scan-and-purge-logs@main
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # --- Secret bootstrap (inline — must not run PR-controlled code) ---
+      # Fetched only if actually needed for the Slack notification below, so
+      # a Vault/AppRole outage can never block the scan/purge above -- that's
+      # the security-critical part and must run regardless.
       - name: Read AppRole credentials
+        if: steps.scan.outputs.leaks-found == 'true' || steps.scan.outputs.scan-ok == 'false'
         id: approle
         run: |
           APPROLE_DIR="${HOME}/.vault-server/.approle"
@@ -42,6 +53,7 @@ jobs:
           echo "secret-id=$(cat "${APPROLE_DIR}/secret-id")" >> "$GITHUB_OUTPUT"
 
       - name: Retrieve Slack webhook from Vault
+        if: steps.scan.outputs.leaks-found == 'true' || steps.scan.outputs.scan-ok == 'false'
         id: vault
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc  # v4
         with:
@@ -53,20 +65,13 @@ jobs:
           secrets: |
             secret/data/osac/e2e/slack-webhook-url url | SLACK_WEBHOOK_URL
 
-      - name: Scan and purge run logs
-        id: scan
-        uses: osac-project/osac-test-infra/.github/actions/scan-and-purge-logs@main
-        with:
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Notify Slack on leak
-        if: steps.scan.outputs.leaks-found == 'true'
+      - name: Notify Slack on leak or scan failure
+        if: steps.scan.outputs.leaks-found == 'true' || steps.scan.outputs.scan-ok == 'false'
         uses: osac-project/osac-test-infra/.github/actions/notify-slack@main
         with:
           status: failure
           workflow-name: ${{ github.event.workflow_run.name }}
-          failed-step: "Credential(s) detected in run logs (${{ steps.scan.outputs.findings-count }} finding(s))"
+          failed-step: "${{ steps.scan.outputs.leaks-found == 'true' && format('Credential(s) detected in run logs ({0} finding(s))', steps.scan.outputs.findings-count) || 'Could not fetch run logs to scan for leaked credentials' }}"
           slack-webhook-url: ${{ steps.vault.outputs.SLACK_WEBHOOK_URL }}
           workflow-url: ${{ github.event.workflow_run.html_url }}
           branch-name: ${{ github.event.workflow_run.head_branch }}
