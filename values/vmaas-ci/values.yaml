@@ -22,7 +22,7 @@ operator:
     computeInstance: true
     tenant: true
     networking: true
-    storageController: true
+    storage: true
 
 # --- Fulfillment Service ---
 service:
