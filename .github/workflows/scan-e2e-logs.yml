@@ -1,0 +1,73 @@
+---
+name: Scan E2E logs
+
+# Mirrors osac-test-infra's own scan-e2e-logs.yml so this repo's own e2e
+# runs also get immediate post-run credential scanning: workflow_run can't
+# cross repos, so each repo that calls the reusable e2e workflows needs its
+# own listener. The actual scanning logic is NOT duplicated -- this just
+# invokes osac-test-infra's shared composite actions cross-repo. Keep the
+# `workflows:` list in sync with whatever this repo's own e2e-calling
+# workflow(s) are named -- this repo has two: its dedicated
+# e2e-vmaas-full-install.yml caller, and a second call inside
+# nightly-build.yaml (see osac-test-infra's audit-workflow-logs.yml for how
+# to check for drift/new callers).
+#
+# This -- and the equivalent copy in every other repo that calls the
+# reusable e2e workflows -- becomes unnecessary once the planned monorepo
+# migration lands and everything is one repo.
+on:
+  workflow_run:
+    workflows: ["E2E VMaaS Full Install", "Nightly Build"]
+    types: [completed]
+
+concurrency:
+  group: scan-e2e-logs-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  scan-logs:
+    runs-on: osac-ci
+    permissions:
+      contents: read
+      # Fetching and deleting the completed run's logs needs actions:write.
+      actions: write
+    steps:
+      # --- Secret bootstrap (inline — must not run PR-controlled code) ---
+      - name: Read AppRole credentials
+        id: approle
+        run: |
+          APPROLE_DIR="${HOME}/.vault-server/.approle"
+          echo "role-id=$(cat "${APPROLE_DIR}/role-id")" >> "$GITHUB_OUTPUT"
+          echo "::add-mask::$(cat "${APPROLE_DIR}/secret-id")"
+          echo "secret-id=$(cat "${APPROLE_DIR}/secret-id")" >> "$GITHUB_OUTPUT"
+
+      - name: Retrieve Slack webhook from Vault
+        id: vault
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc  # v4
+        with:
+          url: http://127.0.0.1:8200
+          method: approle
+          roleId: ${{ steps.approle.outputs.role-id }}
+          secretId: ${{ steps.approle.outputs.secret-id }}
+          exportEnv: false
+          secrets: |
+            secret/data/osac/e2e/slack-webhook-url url | SLACK_WEBHOOK_URL
+
+      - name: Scan and purge run logs
+        id: scan
+        uses: osac-project/osac-test-infra/.github/actions/scan-and-purge-logs@main
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Slack on leak
+        if: steps.scan.outputs.leaks-found == 'true'
+        uses: osac-project/osac-test-infra/.github/actions/notify-slack@main
+        with:
+          status: failure
+          workflow-name: ${{ github.event.workflow_run.name }}
+          failed-step: "Credential(s) detected in run logs (${{ steps.scan.outputs.findings-count }} finding(s))"
+          slack-webhook-url: ${{ steps.vault.outputs.SLACK_WEBHOOK_URL }}
+          workflow-url: ${{ github.event.workflow_run.html_url }}
+          branch-name: ${{ github.event.workflow_run.head_branch }}
+          commit-sha: ${{ github.event.workflow_run.head_sha }}
