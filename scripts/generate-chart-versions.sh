@@ -24,6 +24,8 @@ source "${SCRIPT_DIR}/lib.sh"
 : "${CRD_CHARTS:?CRD_CHARTS must be set}"
 : "${COMPONENTS:?COMPONENTS must be set}"
 
+# Resolve a submodule's release tag and current SHA for chart-versions.txt.
+# Usage: chart_info_for_path <submodule_path>; prints "<tag>|<sha>".
 chart_info_for_path() {
   local path=$1
   local tag sha
