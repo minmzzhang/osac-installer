@@ -38,7 +38,11 @@ chart_info_for_path() {
   # Fail loudly rather than silently guessing a version: publishing a
   # chart under a made-up placeholder tag would be worse than failing
   # the build, since it could get pushed to the registry unnoticed.
-  if ! tag=$(git -C "${path}" describe --tags --abbrev=0 --exclude '*-nightly*' 2>/dev/null); then
+  # --match restricts to plain "vX.Y.Z" tags: some component repos (e.g.
+  # osac-operator) also carry a separate "api/vX.Y.Z" tag namespace (Go
+  # API module versioning) that `describe` would otherwise pick up if
+  # it happens to be nearer HEAD than the real chart-release tag.
+  if ! tag=$(git -C "${path}" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-nightly*' 2>/dev/null); then
     echo "ERROR: no real (non-nightly) release tag reachable from ${path} — refusing to guess a version" >&2
     exit 1
   fi
