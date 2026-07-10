@@ -104,7 +104,13 @@ jobs:
         set -euo pipefail
         DATE=$(date -u +%Y%m%d)
         SHORT_SHA=$(git rev-parse --short=7 HEAD)
-        BRANCH="nightly/${DATE}-${SHORT_SHA}"
+        # Include the run ID so re-running the workflow against the same
+        # main commit on the same day (e.g. manual workflow_dispatch retries)
+        # never collides with an existing branch — a plain date+sha name
+        # is only unique if main has advanced since the last run, which
+        # isn't true for same-day manual re-runs and causes a
+        # non-fast-forward push rejection.
+        BRANCH="nightly/${DATE}-${SHORT_SHA}-${GITHUB_RUN_ID}"
 
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -133,8 +139,10 @@ jobs:
         # Chart.yaml placeholder, which is never bumped) so the nightly
         # version reflects where this build actually sits relative to
         # real releases. Fail loudly rather than silently guessing a
-        # version if no real tag is reachable.
-        if ! BASE_TAG=$(git describe --tags --abbrev=0 --exclude '*-nightly*' 2>/dev/null); then
+        # version if no real tag is reachable. --match restricts to plain
+        # "vX.Y.Z" tags in case an unrelated tag namespace (e.g. "api/vX.Y.Z"
+        # in a component repo) is ever introduced here too.
+        if ! BASE_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-nightly*' 2>/dev/null); then
           echo "ERROR: no real (non-nightly) release tag reachable from HEAD — refusing to guess a version" >&2
           exit 1
         fi
