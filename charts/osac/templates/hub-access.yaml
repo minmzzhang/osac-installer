@@ -240,6 +240,24 @@ rules:
   - apiGroups:
       - osac.openshift.io
     resources:
+      - natgateways
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - osac.openshift.io
+    resources:
+      - natgateways/status
+    verbs:
+      - get
+  - apiGroups:
+      - osac.openshift.io
+    resources:
       - baremetalinstances
     verbs:
       - create
