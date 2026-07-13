@@ -427,6 +427,91 @@ def pre_fix_cert_sans(config: RefreshConfig) -> None:
 # ─── Phase 2: Prepare environment ───────────────────────────────────────────
 
 
+def _wait_client_secret(namespace: str, key: str, timeout: int = 300) -> str:
+    """Wait for keycloak-client-secrets to exist and return a key's decoded value.
+
+    This runs in parallel with keycloak_sync() (see main()), which is what
+    actually creates this Secret via the resolve-realm-secrets init
+    container (OSAC-2115) — on a flavor snapshot that predates this Secret,
+    it may not exist the instant this is called, so poll rather than
+    reading it once.
+    """
+    deadline = time.time() + timeout
+    while True:
+        if oc_exists("secret/keycloak-client-secrets", namespace):
+            data = oc_json("get", "secret", "keycloak-client-secrets", "-n", namespace).get("data", {})
+            encoded = data.get(key)
+            if encoded:
+                return base64.b64decode(encoded).decode()
+        if time.time() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for key {key} in secret/keycloak-client-secrets -n {namespace}")
+        time.sleep(5)
+
+
+def _keycloak_admin_token(kc_host: str) -> str:
+    """Get a Keycloak master-realm admin-cli token."""
+    result = subprocess.run(
+        ["curl", "-sk", f"https://{kc_host}/realms/master/protocol/openid-connect/token",
+         "-d", "client_id=admin-cli", "-d", "username=admin", "-d", "password=admin",
+         "-d", "grant_type=password"],
+        capture_output=True, text=True, check=True,
+    )
+    token = json.loads(result.stdout).get("access_token")
+    if not token:
+        raise RuntimeError(f"Could not get Keycloak admin token: {result.stdout}")
+    return token
+
+
+def _sync_client_secrets(config: RefreshConfig, kc_host: str) -> None:
+    """Push each generated client secret into Keycloak via the admin API.
+
+    Keycloak's own --import-realm skips realms that already exist (always
+    true after a snapshot clone, since the realm was imported when the
+    flavor was originally built), so restarting the pod with a freshly
+    rendered realm.json alone does not update an already-imported client's
+    secret in Keycloak's database — confirmed against a real
+    snapshot-cloned cluster, where auth failed with 401 until this sync was
+    added.
+
+    keycloak-client-secrets stores one key per client, named after the
+    literal client ID (e.g. "osac-controller"), matching the
+    resolve-realm-secrets init container in
+    prerequisites/keycloak/service/deployment.yaml and
+    scripts/rotate-keycloak-secret.sh (OSAC-2115).
+    """
+    if not oc_exists("secret/keycloak-client-secrets", config.keycloak_ns):
+        return
+    secrets_data = oc_json("get", "secret", "keycloak-client-secrets", "-n", config.keycloak_ns).get("data", {})
+    if not secrets_data:
+        return
+    token = _keycloak_admin_token(kc_host)
+    for client_id, encoded in secrets_data.items():
+        secret_value = base64.b64decode(encoded).decode()
+
+        result = subprocess.run(
+            ["curl", "-sk", "-H", f"Authorization: Bearer {token}",
+             f"https://{kc_host}/admin/realms/osac/clients?clientId={client_id}"],
+            capture_output=True, text=True, check=True,
+        )
+        clients = json.loads(result.stdout)
+        if not clients:
+            print(f"  WARNING: client {client_id} not found in Keycloak, skipping secret sync")
+            continue
+        client = clients[0]
+        if client.get("secret") == secret_value:
+            continue  # already in sync, e.g. a fresh (non-snapshot) install
+
+        subprocess.run(
+            ["curl", "-sk", "-X", "PUT", "-H", f"Authorization: Bearer {token}",
+             "-H", "Content-Type: application/json",
+             f"https://{kc_host}/admin/realms/osac/clients/{client['id']}",
+             "-d", json.dumps({**client, "secret": secret_value})],
+            capture_output=True, text=True, check=True,
+        )
+        print(f"  Synced secret for client: {client_id}")
+
+
 def keycloak_sync(config: RefreshConfig) -> None:
     """Update Keycloak realm configmap and wait for the realm endpoint."""
     print("  Syncing Keycloak realm configmap...")
@@ -464,6 +549,8 @@ def keycloak_sync(config: RefreshConfig) -> None:
     )
     print("  Keycloak ready")
 
+    _sync_client_secrets(config, kc_host)
+
 
 def create_secrets(config: RefreshConfig) -> None:
     """Create fulfillment, AAP license, and pull secrets for the namespace."""
@@ -474,9 +561,10 @@ def create_secrets(config: RefreshConfig) -> None:
     if not fc_client:
         raise RuntimeError("No client with serviceAccountsEnabled in realm.json")
     fc_id: str = fc_client["clientId"]
-    fc_secret: str = fc_client.get("secret", "")
-    if not fc_secret:
-        raise RuntimeError(f"No secret for client {fc_id} in realm.json")
+    # realm.json only holds a placeholder token for this client's secret now
+    # (see resolve-realm-secrets init container in deployment.yaml,
+    # OSAC-2115); the real, generated value lives in keycloak-client-secrets.
+    fc_secret = _wait_client_secret(config.keycloak_ns, fc_id)
 
     oc_apply_secret("fulfillment-controller-credentials", config.namespace,
                     f"--from-literal=client-id={fc_id}",
