@@ -204,6 +204,10 @@ helm upgrade osac charts/osac/ \
   --wait
 ```
 
+The post-upgrade hook re-publishes cluster templates automatically. This is
+idempotent - existing templates are updated via PATCH while new templates
+are created via POST.
+
 #### Uninstalling
 
 ```bash
@@ -236,7 +240,9 @@ make sync-charts         # Update submodules + rebuild dependencies
 $ watch oc get -n <project-name> pods
 ```
 
-Once the `osac-aap-bootstrap` job completes, OSAC is ready for use.
+Once `helm install` completes successfully (including all post-install hooks),
+OSAC is ready for use. Cluster templates are published automatically by a
+post-install hook that runs after the AAP bootstrap job.
 
 ## OSAC CLI: Setup & Usage
 
@@ -368,6 +374,13 @@ The script removes resources in reverse order:
 1. **cert-manager not ready**: Ensure cert-manager operator is installed and running
 2. **Certificate issues**: Check cert-manager logs and certificate status
 3. **ImagePullBackOff errors**: Verify registry credentials and image string
+4. **Cluster templates missing or incomplete**: Cluster templates are published
+   automatically by a Helm post-install hook (`osac-publish-templates`). If
+   `osac get clustertemplates` returns missing or unexpected results, check the
+   hook pod logs:
+   `oc logs job/osac-publish-templates -n <project-name>`.
+   See [docs/helm-deployment-guide.md](docs/helm-deployment-guide.md#template-publish-hook-failing)
+   for details.
 
 ### Debug Commands
 

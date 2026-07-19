@@ -54,8 +54,35 @@ and template resources.
 ### Phase 3: `make install-osac`
 
 Installs OSAC: operator, fulfillment-service, AAP bootstrap, UI. All
-prerequisites are ready — certificates issued, secrets created, CRDs
+prerequisites are ready - certificates issued, secrets created, CRDs
 registered.
+
+### Post-Install Hooks
+
+After Phase 3, Helm runs post-install (and post-upgrade) hooks that
+finalize the deployment:
+
+| Hook | Weight | What it does |
+|------|--------|-------------|
+| `osac-publish-templates` | 20 | Publishes cluster templates to the fulfillment service catalog |
+
+**Cluster template publishing** (`osac-publish-templates`): An init
+container waits for the fulfillment REST gateway to be healthy (up to
+600s), then launches the `osac-publish-templates` AAP job template and
+polls until it completes. Helm blocks until this hook succeeds, so
+`helm install` and `helm upgrade` will not report success until cluster
+templates are available. The underlying Ansible role uses a PATCH/POST
+pattern, making re-publish on upgrade safe and idempotent.
+
+This hook is enabled by default (`aap.instanceGroups.publishTemplates.enabled: true`).
+To disable it (e.g., in environments without CaaS):
+
+```yaml
+aap:
+  instanceGroups:
+    publishTemplates:
+      enabled: false
+```
 
 ## Values Files
 
@@ -137,6 +164,39 @@ The AAP bootstrap hook can take 10-40 minutes. Monitor with:
 ```bash
 oc logs -f job/osac-aap-bootstrap -n ${NAMESPACE}
 ```
+
+### Template Publish Hook Failing
+
+The `osac-publish-templates` post-install hook must complete for Helm to
+report success. If it fails, cluster templates may be missing or incomplete
+(on upgrade, previously published templates may still exist).
+
+**Check hook pod status and logs:**
+
+```bash
+oc get pods -n ${NAMESPACE} | grep publish-templates
+oc logs job/osac-publish-templates -n ${NAMESPACE} -c wait-for-fulfillment  # init container
+oc logs job/osac-publish-templates -n ${NAMESPACE} -c publish-templates     # main container
+```
+
+**Common causes:**
+
+- **Fulfillment service not ready** - The init container polls
+  `https://fulfillment-rest-gateway:8000/healthz` for up to 600s. If it
+  times out, check that the fulfillment service pods are running and the
+  `fulfillment-rest-gateway` Service exists.
+- **AAP token missing or empty** - The main container reads the `osac-aap-api-token`
+  Secret and fails if the token is absent or empty. Verify the secret exists
+  and contains a valid token:
+  `oc get secret osac-aap-api-token -n ${NAMESPACE} -o jsonpath='{.data.token}' | base64 -d`.
+- **AAP job template not found** - The `osac-publish-templates` job template
+  must exist in AAP. Verify via AAP UI or API after the bootstrap job
+  completes.
+- **AAP job failure** - The hook logs include the AAP job stdout on failure.
+  Check AAP for the job run details.
+
+The hook has `backoffLimit: 3` and `activeDeadlineSeconds: 1300`. After
+3 retries or 1300s, the Job fails and Helm reports the install as failed.
 
 ### Hook Job Failed
 
