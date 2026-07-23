@@ -9,7 +9,7 @@ operatorCrds:
 operator:
   image:
     repository: ghcr.io/osac-project/osac-operator
-    tag: latest
+    tag: latest  # PLACEHOLDER -- overwritten at release time by publish-charts.yaml
     pullPolicy: Always
   replicaCount: 1
   resources:
@@ -49,7 +49,7 @@ service:
   # [REQUIRED] Hostname for the internal API Route (e.g. fulfillment-internal-api-osac.apps.mycluster.example.com)
   internalHostname: ""
   images:
-    service: ghcr.io/osac-project/fulfillment-service:latest
+    service: ghcr.io/osac-project/fulfillment-service:latest  # PLACEHOLDER -- overwritten at release time by publish-charts.yaml
     envoy: ghcr.io/osac-project/envoy:v1.33.0
   certs:
     issuerRef:
@@ -98,7 +98,7 @@ aap:
       imagePullPolicy: IfNotPresent
   bootstrap:
     enabled: true
-    image: ghcr.io/osac-project/osac-aap:latest
+    image: ghcr.io/osac-project/osac-aap:latest  # PLACEHOLDER -- overwritten at release time by publish-charts.yaml
     cliImage: quay.io/openshift/origin-cli:4.20.0
     backoffLimit: 15
     gateway:
@@ -201,7 +201,7 @@ ui:
   log:
     level: info
   images:
-    ui: ghcr.io/osac-project/osac-ui:latest
+    ui: ghcr.io/osac-project/osac-ui:latest  # PLACEHOLDER -- overwritten at release time by publish-charts.yaml
 
 # --- Bare Metal Fulfillment Operator CRDs ---
 bmfCrds: {}
@@ -211,7 +211,7 @@ bmf:
   enabled: true
   image:
     repository: ghcr.io/osac-project/bare-metal-fulfillment-operator
-    tag: latest
+    tag: latest  # PLACEHOLDER -- overwritten at release time by publish-charts.yaml
     pullPolicy: Always
   replicaCount: 1
   resources:
